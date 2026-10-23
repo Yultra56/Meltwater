@@ -41,6 +41,7 @@ The journal leads you through three camps frozen in the ice, each deeper than th
 | Space | Pause |
 | + / - | Change speed (1x to 3x) |
 | H | Heat view |
+| M | Mute or unmute the sound |
 | R | Restart with a new glacier |
 
 ## What to watch for
@@ -54,11 +55,25 @@ The journal leads you through three camps frozen in the ice, each deeper than th
 - Colonists can walk up and down diagonal stairs, so dig paths as steps. For straight shafts, place ladders.
 - Felt and snow walls slow the heat that escapes into the ice around them.
 
+## Sound
+
+Every sound is made in code by `tools/make_sounds.py` from noise and sine waves, so there are no recordings to license. What you hear:
+
+- The storm howling above you, louder when the view is near the surface. Deeper down it gives way to the low rumble of the glacier, and now and then the ice groans. Cracking ice makes it groan more often.
+- Fires crackle and stoves roar softly. A fire that drowns or is smothered fizzles out.
+- Picks on ice and snow, footsteps, splashing through meltwater, drips landing in pools, ice cracking, melting and refreezing, and falling ice shattering.
+- A heartbeat when a survivor is close to freezing. It slows as they get colder.
+- A short piece of music when you find a camp, a blueprint or a journal page, when someone dies, and when the run ends.
+
+To swap in a real recording, save it as an `.ogg` with the same name in `sounds/` and Godot will use it. To rebuild the made-up sounds after editing the recipes, run `python3 tools/make_sounds.py` (it needs Python with numpy, and ffmpeg).
+
 ## Project layout
 
 - `scripts/world.gd`: the simulation (heat, melting, water, collapse, colonists, food, camps and the journal). No drawing.
 - `scripts/main.gd`: mouse and keyboard tools, the camera and the on-screen text.
 - `scripts/world_view.gd`: draws the world: firelight, particles (drips, steam, sparks, breath), animated survivors, fires, stoves and camps.
+- `scripts/sound_board.gd`: plays the ambience, fire loops, heartbeat and one-off sounds for what the simulation reports.
+- `sounds/`: the sound files, and `tools/make_sounds.py`, which makes them.
 - `shaders/terrain.gdshader`: paints the ice, snow, rock and water, including cracks, layers, bubbles and the heat view.
 - `tests/sim_test.gd`: automated checks for the simulation rules.
 
