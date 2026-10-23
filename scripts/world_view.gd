@@ -12,6 +12,9 @@ const WALK_SPEED := 70.0 # pixels per second the drawn survivor follows its tile
 
 enum Particle { DRIP, STEAM, SPARK, BREATH }
 
+## A drop of meltwater hit the floor or a pool, at a position local to this node.
+signal drip_landed(at: Vector2, into_water: bool)
+
 const COLOR_DIG_MARK := Color(1.0, 0.84, 0.25)
 const COLOR_FLAME := Color(1.0, 0.50, 0.12)
 const COLOR_FLAME_CORE := Color(1.0, 0.86, 0.45)
@@ -245,8 +248,11 @@ func _update_particles(delta: float) -> void:
 		p.p += p.v * delta
 		var cell := Vector2i(floori(p.p.x / CELL), floori(p.p.y / CELL))
 		var dead: bool = p.life <= 0.0
-		if p.kind == Particle.DRIP and (world.is_solid(cell.x, cell.y) or (world.in_bounds(cell.x, cell.y) and world.water[world.idx(cell.x, cell.y)] > 0.3)):
-			dead = true
+		if p.kind == Particle.DRIP and not dead:
+			var into_water := world.in_bounds(cell.x, cell.y) and world.water[world.idx(cell.x, cell.y)] > 0.3
+			if into_water or world.is_solid(cell.x, cell.y):
+				dead = true
+				drip_landed.emit(p.p, into_water)
 		if dead:
 			_particles.remove_at(k)
 		k -= 1

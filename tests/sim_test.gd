@@ -23,6 +23,7 @@ func _init() -> void:
 	_test_camp_discovery()
 	_test_lichen_grows_food()
 	_test_stove_saves_fuel()
+	_test_sound_events()
 	_test_full_run()
 	if _failures == 0:
 		print("All simulation checks passed.")
@@ -169,6 +170,37 @@ func _test_journal() -> void:
 	world.tick()
 	_check(world.journal_step == 2, "opening a crate completes the second entry")
 	_check(not world.is_won(), "the run is not won early")
+
+
+func _test_sound_events() -> void:
+	print("sound events")
+	var world := WorldSim.new(3)
+	world.set_dig_mark(38, 17, true)
+	var heard := {}
+	for k in 200:
+		world.tick()
+		for event: Dictionary in world.events:
+			heard[event.kind] = event
+		world.events.clear()
+	_check(heard.has("chip") and heard["chip"].tile == WorldSim.Tile.ICE, "digging ice sounds like ice")
+	_check(heard.has("step"), "walking makes footsteps")
+	for k in 500:
+		world.tick()
+	_check(world.events.size() <= WorldSim.MAX_EVENTS, "unread events do not pile up")
+
+	world = WorldSim.new(3)
+	var hut: Rect2i = world.camps[0].rect
+	var stand := Vector2i(hut.end.x + 1, hut.end.y - 1)
+	world.tiles[world.idx(stand.x, stand.y)] = WorldSim.Tile.AIR
+	world.colonists[0].pos = stand
+	world.set_dig_mark(hut.end.x, hut.end.y - 1, true)
+	heard.clear()
+	for k in 80:
+		world.tick()
+		for event: Dictionary in world.events:
+			heard[event.kind] = event
+		world.events.clear()
+	_check(heard.has("camp") and heard.has("blueprint"), "finding a camp and its blueprint are heard")
 
 
 func _test_camp_discovery() -> void:

@@ -1,9 +1,10 @@
 extends Node2D
 ## Prototype front end: mouse and keyboard tools, the camera and the HUD.
-## All rules live in world.gd and all world drawing in world_view.gd.
+## All rules live in world.gd, all world drawing in world_view.gd and all sound in sound_board.gd.
 
 const WorldSim := preload("res://scripts/world.gd")
 const WorldView := preload("res://scripts/world_view.gd")
+const SoundBoard := preload("res://scripts/sound_board.gd")
 
 const CELL := 16
 const TOP := 92 # HUD band above the world, in pixels
@@ -35,15 +36,21 @@ var _log: Label
 var _banner: Label
 var _camera: Camera2D
 var _view: WorldView
+var _sound: SoundBoard
 
 
 func _ready() -> void:
+	get_tree().auto_accept_quit = false # see _notification
 	_camera = Camera2D.new()
 	add_child(_camera)
 	_camera.make_current()
 	_view = WorldView.new()
 	_view.position = Vector2(0, TOP)
 	add_child(_view)
+	_sound = SoundBoard.new()
+	_sound.position = Vector2(0, TOP)
+	add_child(_sound)
+	_view.drip_landed.connect(_sound.on_drip_landed)
 	_build_ui()
 	_new_world()
 	_reset_camera()
@@ -52,6 +59,7 @@ func _ready() -> void:
 func _new_world() -> void:
 	world = WorldSim.new(randi())
 	_view.set_world(world)
+	_sound.set_world(world)
 	_accumulator = 0.0
 	_paused = false
 
@@ -106,22 +114,27 @@ func _process(delta: float) -> void:
 	_pan_camera(delta)
 	_view.hover = _hover
 	_view.heat_view = _heat_view
+	_sound.depth = _view_depth()
 	_update_ui()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		# Give the audio a moment to stop, or Godot warns about streams still playing at exit.
+		_sound.stop_all()
+		await get_tree().create_timer(0.1).timeout
+		get_tree().quit()
 
 
 # --- Input -------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode >= KEY_1 and event.keycode <= KEY_8:
+			tool = (event.keycode - KEY_1) as Tool
+			_sound.play_ui("click")
 		match event.keycode:
-			KEY_1: tool = Tool.DIG
-			KEY_2: tool = Tool.FIRE
-			KEY_3: tool = Tool.FELT
-			KEY_4: tool = Tool.SNOW
-			KEY_5: tool = Tool.LADDER
-			KEY_6: tool = Tool.CLEAR
-			KEY_7: tool = Tool.LICHEN
-			KEY_8: tool = Tool.STOVE
+			KEY_M: AudioServer.set_bus_mute(0, not AudioServer.is_bus_mute(0))
 			KEY_SPACE: _paused = not _paused
 			KEY_EQUAL, KEY_KP_ADD: speed = mini(speed + 1, MAX_SPEED)
 			KEY_MINUS, KEY_KP_SUBTRACT: speed = maxi(speed - 1, 1)
@@ -157,6 +170,13 @@ func _cell_at(screen: Vector2) -> Vector2i:
 
 func _screen_to_world(screen: Vector2) -> Vector2:
 	return _camera.position + (screen - get_viewport_rect().size / 2.0) / _camera.zoom.x
+
+
+## How deep the middle of the view is, from 0 at the surface to 1 at bedrock.
+func _view_depth() -> float:
+	var screen := get_viewport_rect().size
+	var centre := _screen_to_world(Vector2(screen.x / 2.0, TOP + WorldSim.H * CELL / 2.0))
+	return clampf((centre.y - TOP) / (WorldSim.H * CELL), 0.0, 1.0)
 
 
 func _reset_camera() -> void:
@@ -210,15 +230,29 @@ func _apply_at(cell: Vector2i) -> void:
 	if _painting == 2:
 		world.clear_at(cell.x, cell.y)
 		return
+	var i := world.idx(cell.x, cell.y)
 	match tool:
-		Tool.DIG: world.set_dig_mark(cell.x, cell.y, true)
-		Tool.FIRE: world.place_fire(cell.x, cell.y)
-		Tool.FELT: world.place_block(cell.x, cell.y, WorldSim.Tile.FELT)
-		Tool.SNOW: world.place_block(cell.x, cell.y, WorldSim.Tile.SNOW)
-		Tool.LADDER: world.place_ladder(cell.x, cell.y)
+		Tool.DIG:
+			var was_marked := world.dig_mark[i] == 1
+			world.set_dig_mark(cell.x, cell.y, true)
+			if not was_marked and world.dig_mark[i] == 1:
+				_sound.play_at_cell("click", cell)
+		Tool.FIRE:
+			if world.place_fire(cell.x, cell.y):
+				_sound.play_at_cell("ignite", cell)
+		Tool.FELT, Tool.SNOW:
+			if world.place_block(cell.x, cell.y, WorldSim.Tile.FELT if tool == Tool.FELT else WorldSim.Tile.SNOW):
+				_sound.play_at_cell("place", cell)
+		Tool.LADDER:
+			if world.place_ladder(cell.x, cell.y):
+				_sound.play_at_cell("knock", cell)
 		Tool.CLEAR: world.clear_at(cell.x, cell.y)
-		Tool.LICHEN: world.place_lichen(cell.x, cell.y)
-		Tool.STOVE: world.place_stove(cell.x, cell.y)
+		Tool.LICHEN:
+			if world.place_lichen(cell.x, cell.y):
+				_sound.play_at_cell("place", cell, 1.3)
+		Tool.STOVE:
+			if world.place_stove(cell.x, cell.y):
+				_sound.play_at_cell("ignite", cell, 0.8)
 
 
 # --- HUD ---------------------------------------------------------------------
@@ -243,7 +277,7 @@ func _update_ui() -> void:
 		hover, "  ".join(tools),
 	]
 	_journal.text = "Journal %d/%d: %s" % [mini(world.journal_step + 1, world.journal.size()), world.journal.size(), world.journal_text()]
-	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-8: tools   Scroll: zoom   WASD: move view   Space: pause   +/-: speed   H: heat   R: restart"
+	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-8: tools   Scroll: zoom   WASD: move view   Space: pause   +/-: speed   H: heat   M: mute   R: restart"
 	if world.is_won():
 		_banner.text = "The journal is complete. %d of 3 made it, on day %d." % [world.alive_count(), world.day() + 1]
 	elif world.is_lost():

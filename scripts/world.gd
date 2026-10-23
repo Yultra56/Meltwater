@@ -47,6 +47,8 @@ const LICHEN_WARM_TEMP := 4.0
 const LICHEN_TICKS_PER_FOOD := 240
 const LICHEN_SNOW_COST := 2
 const MAX_MESSAGES := 5
+const MAX_EVENTS := 64
+const CHIP_EVERY := 6 # dig ticks between pick strikes
 
 
 class Colonist:
@@ -91,6 +93,8 @@ var journal: Array[Dictionary] = [] # {text, done: name of the method that check
 var journal_step := 0
 var _lichen_growth := {} # cell index -> ticks of growth
 var messages: Array[String] = []
+## Things that just happened, for the front end to play sounds for: {kind, x, y, tile}. The reader clears it.
+var events: Array[Dictionary] = []
 var rng := RandomNumberGenerator.new()
 
 var _last_melt_message := -10000
@@ -245,6 +249,12 @@ func describe(x: int, y: int) -> String:
 	return text
 
 
+func _event(kind: String, i: int, tile := -1) -> void:
+	events.append({"kind": kind, "x": i % W, "y": i / W, "tile": tile})
+	if events.size() > MAX_EVENTS:
+		events.remove_at(0) # nobody is listening, as in the tests
+
+
 func log_message(text: String) -> void:
 	messages.append(text)
 	while messages.size() > MAX_MESSAGES:
@@ -361,6 +371,7 @@ func tick() -> void:
 		log_message("Day %d begins." % (day() + 1))
 	if is_lost():
 		log_message("Nobody is left. The ice keeps them.")
+		_event("lost", 0)
 
 
 func _tick_food() -> void:
@@ -453,7 +464,10 @@ func _tick_phase_changes() -> void:
 		if t == Tile.ICE or t == Tile.SNOW:
 			if temp[i] > MELT_POINT:
 				var excess := temp[i] - MELT_POINT
+				var before := integrity[i]
 				integrity[i] -= excess * MELT_RATE * (2.0 if t == Tile.SNOW else 1.0)
+				if before >= 0.5 and integrity[i] < 0.5:
+					_event("crack", i, t) # the point where cracks show
 				temp[i] = MELT_POINT + excess * 0.3 # melting soaks up most of the heat
 				if integrity[i] <= 0.0:
 					_melt(i, 0.3 if t == Tile.SNOW else 0.6)
@@ -466,6 +480,7 @@ func _tick_phase_changes() -> void:
 				water[i] = 0.0
 				build[i] = Build.NONE
 				temp[i] += 1.0 # freezing gives heat back
+				_event("freeze", i)
 			else:
 				water[i] = maxf(water[i] - 0.004, 0.0)
 
@@ -476,6 +491,7 @@ func _melt(i: int, amount: float) -> void:
 	water[i] = minf(water[i] + amount, 1.0)
 	dig_mark[i] = 0
 	reserved.erase(i)
+	_event("melt", i)
 	if ticks - _last_melt_message > 300:
 		_last_melt_message = ticks
 		log_message("The ice is melting. Water is running.")
@@ -528,6 +544,7 @@ func _tick_collapse() -> void:
 				reserved.erase(i)
 				victim.warmth -= 30.0
 				log_message("%s was hit by falling ice." % victim.name)
+				_event("fall", below)
 				continue
 			if fire_is_burning(below):
 				# A burning fire melts the falling chunk; the meltwater is what threatens it now.
@@ -537,6 +554,7 @@ func _tick_collapse() -> void:
 				reserved.erase(i)
 				water[below] = minf(water[below] + 0.5, 1.0)
 				log_message("Falling ice hissed into a fire.")
+				_event("hiss", below)
 				continue
 			_drop_block(i, below)
 
@@ -551,6 +569,9 @@ func _drop_block(from: int, to: int) -> void:
 	water[to] = 0.0
 	if is_heater(to):
 		log_message("Falling ice smothered a fire.")
+		_event("hiss", to)
+	if is_solid(to % W, to / W + 1):
+		_event("fall", to) # it landed
 	build[to] = Build.NONE
 	dig_mark[to] = dig_mark[from]
 	dig_mark[from] = 0
@@ -588,6 +609,7 @@ func _tick_colonist(c: Colonist) -> void:
 		c.alive = false
 		_release_job(c)
 		log_message("%s froze." % c.name)
+		_event("death", i)
 		return
 
 	# Gravity comes before any choice.
@@ -621,6 +643,8 @@ func _tick_colonist(c: Colonist) -> void:
 			_release_job(c)
 			return
 		c.dig_progress += 1.0
+		if int(c.dig_progress) % CHIP_EVERY == 1:
+			_event("chip", c.job, tiles[c.job])
 		if c.dig_progress >= _dig_ticks(c.job):
 			_complete_dig(c)
 
@@ -640,6 +664,7 @@ func _step(c: Colonist) -> void:
 			return
 		c.pos = nxt
 		c.path.remove_at(0)
+	_event("step", idx(c.pos.x, c.pos.y))
 	c.move_cooldown = 3 if c.wet else 2
 
 
@@ -663,6 +688,7 @@ func _complete_dig(c: Colonist) -> void:
 			snow += 1 # chipped ice packs into snow blocks
 		Tile.CRATE:
 			crates_opened += 1
+			_event("crate", i)
 			# Roughly one crate in three holds food instead of fuel.
 			if rng.randf() < 0.35:
 				food += CRATE_FOOD
@@ -691,14 +717,17 @@ func _discover_camp(k: int) -> void:
 	var camp := camps[k]
 	camp.found = true
 	log_message("Found %s. %s" % [camp.name, camp.page])
+	_event("camp", idx(camp.rect.position.x, camp.rect.position.y))
 	food += camp.food
 	fuel += camp.fuel
 	match camp.blueprint:
 		"lichen":
 			lichen_unlocked = true
+			_event("blueprint", idx(camp.rect.position.x, camp.rect.position.y))
 			log_message("New blueprint: lichen bed. It grows food in the warmth.")
 		"stove":
 			stove_unlocked = true
+			_event("blueprint", idx(camp.rect.position.x, camp.rect.position.y))
 			log_message("New blueprint: peat stove. It burns far less fuel than an open fire.")
 
 func _release_job(c: Colonist) -> void:
@@ -920,6 +949,8 @@ func _tick_journal() -> void:
 		journal_step += 1
 		if journal_step >= journal.size():
 			won = true
+			_event("won", 0)
 			log_message("The journal is complete. The Warm Floor is real, and it is right beneath you.")
 		else:
+			_event("journal", 0)
 			log_message("Journal: " + journal_text())
