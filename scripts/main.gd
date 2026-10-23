@@ -1,8 +1,9 @@
 extends Node2D
-## Prototype front end: draws the world with plain shapes, handles mouse tools and the HUD.
-## All rules live in world.gd; nothing here changes the simulation except through its actions.
+## Prototype front end: mouse and keyboard tools, the camera and the HUD.
+## All rules live in world.gd and all world drawing in world_view.gd.
 
 const WorldSim := preload("res://scripts/world.gd")
+const WorldView := preload("res://scripts/world_view.gd")
 
 const CELL := 16
 const TOP := 92 # HUD band above the world, in pixels
@@ -17,28 +18,7 @@ enum Tool { DIG, FIRE, FELT, SNOW, LADDER, CLEAR, LICHEN, STOVE }
 const TOOL_NAMES := ["Dig", "Fire", "Felt wall", "Snow block", "Ladder", "Clear", "Lichen bed", "Peat stove"]
 
 const COLOR_BACKGROUND := Color(0.04, 0.05, 0.08)
-const COLOR_STORM := Color(0.56, 0.60, 0.68)
-const COLOR_CAVE := Color(0.08, 0.09, 0.13)
-const COLOR_CAVE_WARM := Color(0.32, 0.18, 0.09)
-const COLOR_YOUNG_ICE := Color(0.86, 0.91, 0.96)
-const COLOR_OLD_ICE := Color(0.26, 0.50, 0.82)
-const COLOR_SNOW := Color(0.94, 0.95, 0.97)
-const COLOR_STONE := Color(0.27, 0.25, 0.24)
-const COLOR_FELT := Color(0.52, 0.36, 0.24)
-const COLOR_CRATE := Color(0.62, 0.45, 0.16)
-const COLOR_CRACK := Color(0.15, 0.20, 0.30, 0.8)
-const COLOR_WATER := Color(0.18, 0.42, 0.85, 0.85)
-const COLOR_DIG_MARK := Color(1.0, 0.84, 0.25)
-const COLOR_FIRE := Color(1.0, 0.55, 0.15)
-const COLOR_FIRE_CORE := Color(1.0, 0.85, 0.4)
-const COLOR_LADDER := Color(0.55, 0.40, 0.25)
-const COLOR_COLD := Color(0.35, 0.55, 1.0)
-const COLOR_WARM := Color(1.0, 0.72, 0.40)
 const COLOR_JOURNAL := Color(1.0, 0.86, 0.55)
-const COLOR_LICHEN := Color(0.45, 0.70, 0.35)
-const COLOR_STOVE := Color(0.38, 0.35, 0.32)
-const COLOR_CAMP_PROP := Color(0.62, 0.58, 0.50)
-const COLOR_BODY := Color(0.55, 0.60, 0.66)
 
 var world: WorldSim
 var tool := Tool.DIG
@@ -54,12 +34,16 @@ var _journal: Label
 var _log: Label
 var _banner: Label
 var _camera: Camera2D
+var _view: WorldView
 
 
 func _ready() -> void:
 	_camera = Camera2D.new()
 	add_child(_camera)
 	_camera.make_current()
+	_view = WorldView.new()
+	_view.position = Vector2(0, TOP)
+	add_child(_view)
 	_build_ui()
 	_new_world()
 	_reset_camera()
@@ -67,6 +51,7 @@ func _ready() -> void:
 
 func _new_world() -> void:
 	world = WorldSim.new(randi())
+	_view.set_world(world)
 	_accumulator = 0.0
 	_paused = false
 
@@ -119,8 +104,9 @@ func _process(delta: float) -> void:
 		if steps == 10:
 			_accumulator = 0.0 # the machine can't keep up; drop the backlog rather than spiral
 	_pan_camera(delta)
+	_view.hover = _hover
+	_view.heat_view = _heat_view
 	_update_ui()
-	queue_redraw()
 
 
 # --- Input -------------------------------------------------------------------
@@ -264,162 +250,3 @@ func _update_ui() -> void:
 		_banner.text = "Everyone is gone. Press R to try again."
 	else:
 		_banner.text = ""
-
-
-# --- Drawing -----------------------------------------------------------------
-
-func _draw() -> void:
-	draw_rect(Rect2(0, 0, WorldSim.W * CELL, TOP + WorldSim.H * CELL + 160), COLOR_BACKGROUND)
-	var now := Time.get_ticks_msec() / 1000.0
-	for y in WorldSim.H:
-		for x in WorldSim.W:
-			var i := world.idx(x, y)
-			var r := Rect2(x * CELL, TOP + y * CELL, CELL, CELL)
-			if _heat_view:
-				draw_rect(r, _heat_color(world.temp[i]))
-			else:
-				_draw_tile(i, x, y, r)
-			if world.water[i] > 0.02 and world.tiles[i] == WorldSim.Tile.AIR:
-				var h := CELL * minf(world.water[i], 1.0)
-				draw_rect(Rect2(r.position.x, r.end.y - h, CELL, h), COLOR_WATER)
-			match world.build[i]:
-				WorldSim.Build.FIRE: _draw_fire(r, world.fire_is_burning(i), now + x)
-				WorldSim.Build.LADDER: _draw_ladder(r)
-				WorldSim.Build.LICHEN: _draw_lichen(r)
-				WorldSim.Build.STOVE: _draw_stove(r, world.fire_is_burning(i), now + x)
-			if world.dig_mark[i] == 1:
-				draw_rect(r.grow(-1.5), COLOR_DIG_MARK, false, 1.5)
-	for camp in world.camps:
-		_draw_camp(camp)
-	for k in world.colonists.size():
-		_draw_colonist(world.colonists[k], k)
-	if world.in_bounds(_hover.x, _hover.y):
-		draw_rect(Rect2(_hover.x * CELL, TOP + _hover.y * CELL, CELL, CELL), Color(1, 1, 1, 0.8), false, 1.0)
-
-
-func _draw_tile(i: int, x: int, y: int, r: Rect2) -> void:
-	var t := world.tiles[i]
-	var temp := world.temp[i]
-	match t:
-		WorldSim.Tile.AIR:
-			var camp := world.camp_at(x, y)
-			if y < WorldSim.SURFACE_ROWS:
-				draw_rect(r, COLOR_STORM)
-			elif camp != -1 and not world.camps[camp].found:
-				# An unopened camp is still sealed in ice; you only see it through the walls.
-				draw_rect(r, COLOR_YOUNG_ICE.lerp(COLOR_OLD_ICE, world.ice_age(y)).darkened(0.25))
-			else:
-				draw_rect(r, COLOR_CAVE.lerp(COLOR_CAVE_WARM, clampf(temp / 25.0, 0.0, 1.0)))
-		WorldSim.Tile.ICE:
-			# Old deep ice is clear blue; young ice is white. Weak ice turns grey.
-			var c := COLOR_YOUNG_ICE.lerp(COLOR_OLD_ICE, world.ice_age(y))
-			c = c.lerp(Color(0.45, 0.50, 0.56), clampf(1.0 - world.integrity[i] / 0.8, 0.0, 0.6))
-			if temp > -1.0:
-				c = c.lightened(0.15) # wet, glistening surface
-			draw_rect(r, c)
-		WorldSim.Tile.SNOW:
-			draw_rect(r, COLOR_SNOW)
-		WorldSim.Tile.ROCK:
-			draw_rect(r, COLOR_STONE)
-		WorldSim.Tile.FELT:
-			draw_rect(r, COLOR_FELT)
-			draw_line(r.position + Vector2(2, 5), r.position + Vector2(CELL - 2, 5), COLOR_FELT.darkened(0.3))
-			draw_line(r.position + Vector2(2, 11), r.position + Vector2(CELL - 2, 11), COLOR_FELT.darkened(0.3))
-		WorldSim.Tile.CRATE:
-			draw_rect(r, COLOR_OLD_ICE.lerp(COLOR_YOUNG_ICE, 0.3))
-			draw_rect(r.grow(-3), COLOR_CRATE)
-			draw_line(r.position + Vector2(3, 3), r.end - Vector2(3, 3), COLOR_CRATE.darkened(0.4))
-	if (t == WorldSim.Tile.ICE or t == WorldSim.Tile.SNOW) and world.integrity[i] < 0.5:
-		draw_line(r.position + Vector2(3, 2), r.position + Vector2(9, 9), COLOR_CRACK, 1.0)
-		draw_line(r.position + Vector2(9, 9), r.position + Vector2(6, 14), COLOR_CRACK, 1.0)
-		draw_line(r.position + Vector2(9, 9), r.position + Vector2(14, 7), COLOR_CRACK, 1.0)
-
-
-func _draw_fire(r: Rect2, burning: bool, t: float) -> void:
-	var base := r.position + Vector2(CELL / 2.0, CELL)
-	if not burning:
-		draw_rect(Rect2(base.x - 5, base.y - 3, 10, 3), Color(0.3, 0.3, 0.3))
-		return
-	var flicker := 1.0 + 0.15 * sin(t * 11.0)
-	var tall := 12.0 * flicker
-	draw_colored_polygon(PackedVector2Array([base + Vector2(-6, 0), base + Vector2(6, 0), base + Vector2(0, -tall)]), COLOR_FIRE)
-	draw_colored_polygon(PackedVector2Array([base + Vector2(-3, 0), base + Vector2(3, 0), base + Vector2(0, -tall * 0.55)]), COLOR_FIRE_CORE)
-
-
-func _draw_ladder(r: Rect2) -> void:
-	draw_line(r.position + Vector2(4, 0), r.position + Vector2(4, CELL), COLOR_LADDER, 2.0)
-	draw_line(r.position + Vector2(12, 0), r.position + Vector2(12, CELL), COLOR_LADDER, 2.0)
-	for k in 3:
-		var yy := r.position.y + 3 + k * 5
-		draw_line(Vector2(r.position.x + 4, yy), Vector2(r.position.x + 12, yy), COLOR_LADDER, 1.5)
-
-
-func _draw_colonist(c: WorldSim.Colonist, k: int) -> void:
-	# Colonists sharing a tile stand side by side instead of on top of each other.
-	var shift := 0
-	for j in k:
-		var other: WorldSim.Colonist = world.colonists[j]
-		if other.pos == c.pos:
-			shift += 1
-	var offset: int = [0, 11, -11][shift % 3]
-	var r := Rect2(c.pos.x * CELL + 3 + offset, TOP + c.pos.y * CELL + 2, CELL - 6, CELL - 2)
-	if not c.alive:
-		draw_rect(Rect2(r.position.x - 2, r.end.y - 5, r.size.x + 4, 5), Color(0.55, 0.6, 0.65))
-		return
-	var body := COLOR_COLD.lerp(COLOR_WARM, c.warmth / 100.0)
-	draw_rect(r.grow(1), Color(0.05, 0.05, 0.08))
-	draw_rect(r, body)
-	draw_rect(Rect2(r.position.x + 2, r.position.y + 2, r.size.x - 4, 3), body.darkened(0.4)) # hood
-	# Warmth bar above the head.
-	draw_rect(Rect2(r.position.x, r.position.y - 4, r.size.x, 2), Color(0.1, 0.1, 0.1))
-	draw_rect(Rect2(r.position.x, r.position.y - 4, r.size.x * c.warmth / 100.0, 2), body)
-
-
-func _heat_color(t: float) -> Color:
-	if t < 0.0:
-		return Color(0.95, 0.97, 1.0).lerp(Color(0.10, 0.20, 0.70), clampf(-t / 40.0, 0.0, 1.0))
-	return Color(0.95, 0.97, 1.0).lerp(Color(0.85, 0.20, 0.10), clampf(t / 30.0, 0.0, 1.0))
-
-
-func _draw_lichen(r: Rect2) -> void:
-	var base := r.end.y
-	for k in 3:
-		var cx := r.position.x + 3 + k * 5
-		draw_circle(Vector2(cx, base - 3), 2.5 + (k % 2), COLOR_LICHEN)
-	draw_line(Vector2(r.position.x + 1, base - 1), Vector2(r.end.x - 1, base - 1), COLOR_LICHEN.darkened(0.4), 2.0)
-
-
-func _draw_stove(r: Rect2, burning: bool, t: float) -> void:
-	var body := Rect2(r.position.x + 2, r.position.y + 4, CELL - 4, CELL - 4)
-	draw_rect(body, COLOR_STOVE)
-	draw_rect(Rect2(r.position.x + 6, r.position.y, 4, 4), COLOR_STOVE) # chimney stub
-	var glow := COLOR_FIRE.lerp(COLOR_FIRE_CORE, 0.5 + 0.5 * sin(t * 7.0)) if burning else Color(0.3, 0.3, 0.3)
-	draw_rect(Rect2(body.position.x + 2, body.position.y + 5, body.size.x - 4, 3), glow)
-
-
-## Camps sealed in the ice are drawn faintly, as if seen through it, so the player always has somewhere to dig toward.
-func _draw_camp(camp: Dictionary) -> void:
-	var rect: Rect2i = camp.rect
-	var found: bool = camp.found
-	var alpha := 1.0 if found else 0.45
-	var origin := Vector2(rect.position.x * CELL, TOP + rect.position.y * CELL)
-	var size := Vector2(rect.size.x * CELL, rect.size.y * CELL)
-	var floor_y := origin.y + size.y
-	var prop := Color(COLOR_CAMP_PROP, alpha)
-	# A collapsed tent at one end.
-	draw_colored_polygon(PackedVector2Array([
-		Vector2(origin.x + 4, floor_y), Vector2(origin.x + 2.6 * CELL, floor_y),
-		Vector2(origin.x + 1.2 * CELL, floor_y - 1.6 * CELL)]), prop)
-	# A supply box and a figure lying where the cold found them.
-	draw_rect(Rect2(origin.x + 3.4 * CELL, floor_y - 10, 12, 10), Color(COLOR_CRATE, alpha))
-	draw_rect(Rect2(origin.x + 5 * CELL, floor_y - 6, 22, 6), Color(COLOR_BODY, alpha))
-	draw_circle(Vector2(origin.x + 5 * CELL + 25, floor_y - 4), 3.5, Color(COLOR_BODY, alpha))
-	if camp.name == "the last shelter":
-		for k in 9:
-			var tx := origin.x + size.x - 34 + k * 3.5
-			draw_line(Vector2(tx, origin.y + 6), Vector2(tx, origin.y + 16), prop, 1.0)
-	var font := ThemeDB.fallback_font
-	var label: String = camp.name.capitalize() if found else "?"
-	draw_string(font, Vector2(origin.x + 2, origin.y - 3), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(COLOR_JOURNAL, alpha))
-	if not found:
-		draw_rect(Rect2(origin, size), Color(COLOR_JOURNAL, 0.35), false, 1.0)

@@ -753,6 +753,8 @@ func _seek_warmth(c: Colonist) -> void:
 		var other := colonist_at(p.x, p.y)
 		if other != null and other != c:
 			score -= 3.0 # leave room for the others around the fire
+		if is_heater(idx(p.x, p.y)):
+			score -= 8.0 # sit beside the fire, not in it
 		if score > best_score + 1.0:
 			best_score = score
 			best = p
