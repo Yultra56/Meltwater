@@ -1,15 +1,15 @@
 extends RefCounted
-## Simulation for the Meltwater prototype: tiles, heat, melting, meltwater and colonists.
+## Simulation for the Meltwater prototype: tiles, heat, melting, meltwater, colonists,
+## food, the frozen camps of earlier expeditions and the expedition journal.
 ## Pure data and rules with no rendering, so it can run headless in tests.
 
 enum Tile { AIR, ICE, ROCK, FELT, SNOW, CRATE }
-enum Build { NONE, FIRE, LADDER }
+enum Build { NONE, FIRE, LADDER, LICHEN, STOVE }
 
 const W := 64
 const H := 40
 const TICKS_PER_SECOND := 10
 const TICKS_PER_DAY := 600
-const TARGET_DAYS := 10
 
 const SURFACE_ROWS := 3
 const FIRN_ROWS := 3
@@ -33,9 +33,19 @@ const FIRE_FUEL_PER_TICK := 0.025
 const FIRE_DROWN_WATER := 0.8
 const FIRE_BOIL_RATE := 0.05
 const BODY_HEAT := 0.25
+const STOVE_HEAT := 2.4
+const STOVE_MAX_TEMP := 30.0
+const STOVE_FUEL_SHARE := 0.4 # a peat stove burns this share of what an open fire does
 const CRATE_FUEL := 20.0
+const CRATE_FOOD := 4.0
 const START_FUEL := 60.0
 const START_FELT := 10
+const START_FOOD := 9.0
+const RATIONS_PER_DAY := 1.0 # per colonist
+const HUNGER_CHILL := 0.03 # extra warmth lost per tick with no food left
+const LICHEN_WARM_TEMP := 4.0
+const LICHEN_TICKS_PER_FOOD := 240
+const LICHEN_SNOW_COST := 2
 const MAX_MESSAGES := 5
 
 
@@ -68,18 +78,31 @@ var colonists: Array[Colonist] = []
 var fuel := START_FUEL
 var felt := START_FELT
 var snow := 0
+var food := START_FOOD
 var ticks := 0
+var won := false
+
+var camps: Array[Dictionary] = [] # {name, rect: Rect2i, found: bool, page: String}
+var lichen_unlocked := false
+var stove_unlocked := false
+var crates_opened := 0
+var blocks_placed := 0
+var journal: Array[Dictionary] = [] # {text, done: name of the method that checks it}
+var journal_step := 0
+var _lichen_growth := {} # cell index -> ticks of growth
 var messages: Array[String] = []
 var rng := RandomNumberGenerator.new()
 
 var _last_melt_message := -10000
 var _last_collapse_message := -10000
 var _fuel_warned := false
+var _food_warned := false
 
 
 func _init(seed_value: int = 1) -> void:
 	rng.seed = seed_value
 	_generate()
+	_build_journal()
 
 
 # --- Queries -----------------------------------------------------------------
@@ -119,8 +142,35 @@ func is_diggable(i: int) -> bool:
 	return t == Tile.ICE or t == Tile.SNOW or t == Tile.CRATE or t == Tile.FELT
 
 
+func is_heater(i: int) -> bool:
+	return build[i] == Build.FIRE or build[i] == Build.STOVE
+
+
 func fire_is_burning(i: int) -> bool:
-	return build[i] == Build.FIRE and fuel > 0.0 and water[i] <= FIRE_DROWN_WATER
+	return is_heater(i) and fuel > 0.0 and water[i] <= FIRE_DROWN_WATER
+
+
+func count_builds(kind: int) -> int:
+	var n := 0
+	for b in build:
+		if b == kind:
+			n += 1
+	return n
+
+
+## The camp whose old room contains this tile, or -1.
+func camp_at(x: int, y: int) -> int:
+	for k in camps.size():
+		var rect: Rect2i = camps[k].rect
+		if rect.has_point(Vector2i(x, y)):
+			return k
+	return -1
+
+
+func journal_text() -> String:
+	if journal_step >= journal.size():
+		return "The journal is complete."
+	return journal[journal_step].text
 
 
 ## How deep and therefore how old the ice is, from 0 at the surface to 1 at bedrock.
@@ -146,7 +196,7 @@ func alive_count() -> int:
 
 
 func is_won() -> bool:
-	return ticks >= TARGET_DAYS * TICKS_PER_DAY and alive_count() > 0
+	return won
 
 
 func is_lost() -> bool:
@@ -172,15 +222,26 @@ func describe(x: int, y: int) -> String:
 	var text: String = names[tiles[i]]
 	if y < SURFACE_ROWS:
 		text = "Surface storm"
+	var camp := camp_at(x, y)
+	if camp != -1:
+		text = String(camps[camp].name).capitalize() if camps[camp].found else "Something frozen in the ice"
 	text += ", %.1f°C" % temp[i]
 	if tiles[i] == Tile.ICE or tiles[i] == Tile.SNOW:
 		text += ", strength %d%%" % roundi(integrity[i] * 100.0)
 	if water[i] > 0.02:
 		text += ", water %d%%" % roundi(water[i] * 100.0)
-	if build[i] == Build.FIRE:
-		text += ", fire" + ("" if fire_is_burning(i) else " (out)")
-	elif build[i] == Build.LADDER:
-		text += ", ladder"
+	match build[i]:
+		Build.FIRE:
+			text += ", fire" + ("" if fire_is_burning(i) else " (out)")
+		Build.STOVE:
+			text += ", peat stove" + ("" if fire_is_burning(i) else " (out)")
+		Build.LADDER:
+			text += ", ladder"
+		Build.LICHEN:
+			var grow: int = _lichen_growth.get(i, 0)
+			text += ", lichen bed %d%%" % roundi(100.0 * grow / LICHEN_TICKS_PER_FOOD)
+			if temp[i] <= LICHEN_WARM_TEMP:
+				text += " (too cold to grow)"
 	return text
 
 
@@ -203,12 +264,32 @@ func set_dig_mark(x: int, y: int, on: bool) -> void:
 
 
 func place_fire(x: int, y: int) -> bool:
+	return _place_heater(x, y, Build.FIRE)
+
+
+func place_stove(x: int, y: int) -> bool:
+	return stove_unlocked and _place_heater(x, y, Build.STOVE)
+
+
+func place_lichen(x: int, y: int) -> bool:
+	if not lichen_unlocked or snow < LICHEN_SNOW_COST or not is_standable(x, y) or y < SURFACE_ROWS:
+		return false
+	var i := idx(x, y)
+	if build[i] != Build.NONE:
+		return false
+	snow -= LICHEN_SNOW_COST
+	build[i] = Build.LICHEN
+	_lichen_growth[i] = 0
+	return true
+
+
+func _place_heater(x: int, y: int, kind: int) -> bool:
 	if not is_standable(x, y):
 		return false
 	var i := idx(x, y)
 	if build[i] != Build.NONE or water[i] > FIRE_DROWN_WATER or y < SURFACE_ROWS:
 		return false
-	build[i] = Build.FIRE
+	build[i] = kind
 	# Fires sit on a stone hearth, or they would melt straight through the floor.
 	var below := idx(x, y + 1)
 	if tiles[below] != Tile.ROCK:
@@ -248,6 +329,7 @@ func place_block(x: int, y: int, kind: int) -> bool:
 		return false
 	tiles[i] = kind
 	water[i] = 0.0
+	blocks_placed += 1
 	return true
 
 
@@ -265,6 +347,8 @@ func tick() -> void:
 	if is_over():
 		return
 	ticks += 1
+	_tick_food()
+	_tick_lichen()
 	_tick_fires()
 	_tick_conduction()
 	_tick_phase_changes()
@@ -272,17 +356,37 @@ func tick() -> void:
 	_tick_collapse()
 	for c in colonists:
 		_tick_colonist(c)
+	_tick_journal()
 	if ticks % TICKS_PER_DAY == 0 and not is_over():
 		log_message("Day %d begins." % (day() + 1))
-	if is_won():
-		log_message("Day %d reached with %d alive. The colony holds, for now." % [TARGET_DAYS, alive_count()])
-	elif is_lost():
+	if is_lost():
 		log_message("Nobody is left. The ice keeps them.")
+
+
+func _tick_food() -> void:
+	food = maxf(food - alive_count() * RATIONS_PER_DAY / TICKS_PER_DAY, 0.0)
+	if food <= 0.0 and not _food_warned:
+		_food_warned = true
+		log_message("The rations are gone. Hunger makes the cold worse.")
+	elif food > 0.5:
+		_food_warned = false
+
+
+func _tick_lichen() -> void:
+	for i: int in _lichen_growth.keys():
+		if build[i] != Build.LICHEN:
+			_lichen_growth.erase(i)
+			continue
+		if temp[i] > LICHEN_WARM_TEMP and water[i] <= 0.3:
+			_lichen_growth[i] += 1
+			if _lichen_growth[i] >= LICHEN_TICKS_PER_FOOD:
+				_lichen_growth[i] = 0
+				food += 1.0
 
 
 func _tick_fires() -> void:
 	for i in build.size():
-		if build[i] != Build.FIRE:
+		if not is_heater(i):
 			continue
 		if not is_solid(i % W, i / W + 1):
 			build[i] = Build.NONE
@@ -290,8 +394,12 @@ func _tick_fires() -> void:
 			continue
 		if not fire_is_burning(i):
 			continue
-		fuel = maxf(fuel - FIRE_FUEL_PER_TICK, 0.0)
-		temp[i] = minf(maxf(temp[i], 0.0) + FIRE_HEAT, FIRE_MAX_TEMP)
+		if build[i] == Build.STOVE:
+			fuel = maxf(fuel - FIRE_FUEL_PER_TICK * STOVE_FUEL_SHARE, 0.0)
+			temp[i] = minf(maxf(temp[i], 0.0) + STOVE_HEAT, STOVE_MAX_TEMP)
+		else:
+			fuel = maxf(fuel - FIRE_FUEL_PER_TICK, 0.0)
+			temp[i] = minf(maxf(temp[i], 0.0) + FIRE_HEAT, FIRE_MAX_TEMP)
 		water[i] = maxf(water[i] - FIRE_BOIL_RATE, 0.0) # drips hiss away, a flood puts it out
 	if fuel <= 0.0 and not _fuel_warned:
 		_fuel_warned = true
@@ -421,6 +529,15 @@ func _tick_collapse() -> void:
 				victim.warmth -= 30.0
 				log_message("%s was hit by falling ice." % victim.name)
 				continue
+			if fire_is_burning(below):
+				# A burning fire melts the falling chunk; the meltwater is what threatens it now.
+				tiles[i] = Tile.AIR
+				integrity[i] = 0.0
+				dig_mark[i] = 0
+				reserved.erase(i)
+				water[below] = minf(water[below] + 0.5, 1.0)
+				log_message("Falling ice hissed into a fire.")
+				continue
 			_drop_block(i, below)
 
 
@@ -432,7 +549,7 @@ func _drop_block(from: int, to: int) -> void:
 	temp[from] = t
 	water[from] = water[to]
 	water[to] = 0.0
-	if build[to] == Build.FIRE:
+	if is_heater(to):
 		log_message("Falling ice smothered a fire.")
 	build[to] = Build.NONE
 	dig_mark[to] = dig_mark[from]
@@ -464,6 +581,8 @@ func _tick_colonist(c: Colonist) -> void:
 		c.warmth += 0.25
 	else:
 		c.warmth += 0.05
+	if food <= 0.0:
+		c.warmth -= HUNGER_CHILL
 	c.warmth = clampf(c.warmth, 0.0, 100.0)
 	if c.warmth <= 0.0:
 		c.alive = false
@@ -543,15 +662,44 @@ func _complete_dig(c: Colonist) -> void:
 		Tile.ICE, Tile.SNOW:
 			snow += 1 # chipped ice packs into snow blocks
 		Tile.CRATE:
-			fuel += CRATE_FUEL
-			log_message("%s opened an old expedition crate: +%d fuel." % [c.name, int(CRATE_FUEL)])
+			crates_opened += 1
+			# Roughly one crate in three holds food instead of fuel.
+			if rng.randf() < 0.35:
+				food += CRATE_FOOD
+				log_message("%s opened an old expedition crate: +%d rations." % [c.name, int(CRATE_FOOD)])
+			else:
+				fuel += CRATE_FUEL
+				log_message("%s opened an old expedition crate: +%d fuel." % [c.name, int(CRATE_FUEL)])
 		Tile.FELT:
 			felt += 1
 	tiles[i] = Tile.AIR
 	integrity[i] = 0.0
 	dig_mark[i] = 0
 	_release_job(c)
+	_check_camp_breach(i % W, i / W)
 
+
+## Digging next to a frozen camp opens it: its supplies, a journal page and sometimes a blueprint.
+func _check_camp_breach(x: int, y: int) -> void:
+	for offset: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1), Vector2i.ZERO]:
+		var k := camp_at(x + offset.x, y + offset.y)
+		if k != -1 and not camps[k].found:
+			_discover_camp(k)
+
+
+func _discover_camp(k: int) -> void:
+	var camp := camps[k]
+	camp.found = true
+	log_message("Found %s. %s" % [camp.name, camp.page])
+	food += camp.food
+	fuel += camp.fuel
+	match camp.blueprint:
+		"lichen":
+			lichen_unlocked = true
+			log_message("New blueprint: lichen bed. It grows food in the warmth.")
+		"stove":
+			stove_unlocked = true
+			log_message("New blueprint: peat stove. It burns far less fuel than an open fire.")
 
 func _release_job(c: Colonist) -> void:
 	if c.job != -1:
@@ -698,6 +846,14 @@ func _generate() -> void:
 			temp[i] = -7.0
 			integrity[i] = 0.0
 
+	# Frozen camps of the expeditions that came before, each deeper than the last.
+	_add_camp("the survey hut", Rect2i(6, 21, 8, 3), 8.0, 0.0, "lichen",
+		"Their fire sat on bare ice and the floor gave way under it. A tin of lichen spores is still sealed.")
+	_add_camp("the drill camp", Rect2i(48, 27, 9, 3), 6.0, 30.0, "stove",
+		"Flooded and frozen solid. The last note says: water came from above, we should have drained it.")
+	_add_camp("the last shelter", Rect2i(23, 33, 9, 3), 0.0, 0.0, "",
+		"Tally marks cover the walls. Under the floor the stone is warm to the touch, and the knocking is loud.")
+
 	# Crates left behind by earlier expeditions.
 	var placed := 0
 	while placed < 16:
@@ -714,3 +870,54 @@ func _generate() -> void:
 	for k in names.size():
 		colonists.append(Colonist.new(names[k], Vector2i(29 + k * 3, 17)))
 	log_message("Three survivors reach the ice. Keep them warm.")
+
+
+func _add_camp(camp_name: String, rect: Rect2i, camp_food: float, camp_fuel: float, blueprint: String, page: String) -> void:
+	for y in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			var i := idx(x, y)
+			tiles[i] = Tile.AIR
+			temp[i] = base_temp(y) - 6.0 # sealed for years, colder than the ice around it
+			integrity[i] = 0.0
+	camps.append({
+		"name": camp_name, "rect": rect, "found": false, "page": page,
+		"food": camp_food, "fuel": camp_fuel, "blueprint": blueprint,
+	})
+
+
+# --- Expedition journal ------------------------------------------------------
+
+func _build_journal() -> void:
+	# Each entry names the method that says when it is done. Plain names rather than lambdas,
+	# so the journal holds no reference cycle back to this world.
+	journal = [
+		{"text": "Light a fire (key 2) on the cave floor before the cold sets in.", "done": "_fire_lit"},
+		{"text": "Mark an orange crate for digging (key 1). Earlier expeditions left supplies in the ice.", "done": "_crate_opened"},
+		{"text": "Something is frozen in the ice to the south-west. Dig down to it, and place ladders to climb back.", "done": "_hut_found"},
+		{"text": "Build a lichen bed (key 7) somewhere warm so the colony can grow food.", "done": "_lichen_built"},
+		{"text": "Wall off the cave with felt or snow blocks (keys 3 and 4) so the warmth stays in. Place 6.", "done": "_cave_walled"},
+		{"text": "The survey notes mention a drill team further east and deeper. Find their camp.", "done": "_drill_camp_found"},
+		{"text": "Build a peat stove (key 8). It keeps you warm on far less fuel.", "done": "_stove_built"},
+		{"text": "There is a knocking far below. Follow it down to whoever made it.", "done": "_shelter_found"},
+	]
+	log_message("Journal: " + journal_text())
+
+
+func _fire_lit() -> bool: return count_builds(Build.FIRE) > 0
+func _crate_opened() -> bool: return crates_opened > 0
+func _hut_found() -> bool: return camps[0].found
+func _lichen_built() -> bool: return count_builds(Build.LICHEN) > 0
+func _cave_walled() -> bool: return blocks_placed >= 6
+func _drill_camp_found() -> bool: return camps[1].found
+func _stove_built() -> bool: return count_builds(Build.STOVE) > 0
+func _shelter_found() -> bool: return camps[2].found
+
+
+func _tick_journal() -> void:
+	while journal_step < journal.size() and call(journal[journal_step].done):
+		journal_step += 1
+		if journal_step >= journal.size():
+			won = true
+			log_message("The journal is complete. The Warm Floor is real, and it is right beneath you.")
+		else:
+			log_message("Journal: " + journal_text())

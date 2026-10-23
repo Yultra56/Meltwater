@@ -5,11 +5,11 @@ extends Node2D
 const WorldSim := preload("res://scripts/world.gd")
 
 const CELL := 16
-const TOP := 64 # HUD band above the world, in pixels
+const TOP := 92 # HUD band above the world, in pixels
 const MAX_SPEED := 3
 
-enum Tool { DIG, FIRE, FELT, SNOW, LADDER, CLEAR }
-const TOOL_NAMES := ["Dig", "Fire", "Felt wall", "Snow block", "Ladder", "Clear"]
+enum Tool { DIG, FIRE, FELT, SNOW, LADDER, CLEAR, LICHEN, STOVE }
+const TOOL_NAMES := ["Dig", "Fire", "Felt wall", "Snow block", "Ladder", "Clear", "Lichen bed", "Peat stove"]
 
 const COLOR_BACKGROUND := Color(0.04, 0.05, 0.08)
 const COLOR_STORM := Color(0.56, 0.60, 0.68)
@@ -29,6 +29,11 @@ const COLOR_FIRE_CORE := Color(1.0, 0.85, 0.4)
 const COLOR_LADDER := Color(0.55, 0.40, 0.25)
 const COLOR_COLD := Color(0.35, 0.55, 1.0)
 const COLOR_WARM := Color(1.0, 0.72, 0.40)
+const COLOR_JOURNAL := Color(1.0, 0.86, 0.55)
+const COLOR_LICHEN := Color(0.45, 0.70, 0.35)
+const COLOR_STOVE := Color(0.38, 0.35, 0.32)
+const COLOR_CAMP_PROP := Color(0.62, 0.58, 0.50)
+const COLOR_BODY := Color(0.55, 0.60, 0.66)
 
 var world: WorldSim
 var tool := Tool.DIG
@@ -40,6 +45,7 @@ var _hover := Vector2i(-1, -1)
 var _painting := 0 # 0 = not painting, 1 = left button (apply tool), 2 = right button (clear)
 
 var _hud: Label
+var _journal: Label
 var _log: Label
 var _banner: Label
 
@@ -62,6 +68,11 @@ func _build_ui() -> void:
 	_hud.position = Vector2(12, 6)
 	_hud.add_theme_font_size_override("font_size", 14)
 	layer.add_child(_hud)
+	_journal = Label.new()
+	_journal.position = Vector2(12, 46)
+	_journal.add_theme_font_size_override("font_size", 14)
+	_journal.add_theme_color_override("font_color", COLOR_JOURNAL)
+	layer.add_child(_journal)
 	_log = Label.new()
 	_log.position = Vector2(12, TOP + WorldSim.H * CELL + 6)
 	_log.add_theme_font_size_override("font_size", 13)
@@ -103,6 +114,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_4: tool = Tool.SNOW
 			KEY_5: tool = Tool.LADDER
 			KEY_6: tool = Tool.CLEAR
+			KEY_7: tool = Tool.LICHEN
+			KEY_8: tool = Tool.STOVE
 			KEY_SPACE: _paused = not _paused
 			KEY_EQUAL, KEY_KP_ADD: speed = mini(speed + 1, MAX_SPEED)
 			KEY_MINUS, KEY_KP_SUBTRACT: speed = maxi(speed - 1, 1)
@@ -138,6 +151,8 @@ func _apply_at(cell: Vector2i) -> void:
 		Tool.SNOW: world.place_block(cell.x, cell.y, WorldSim.Tile.SNOW)
 		Tool.LADDER: world.place_ladder(cell.x, cell.y)
 		Tool.CLEAR: world.clear_at(cell.x, cell.y)
+		Tool.LICHEN: world.place_lichen(cell.x, cell.y)
+		Tool.STOVE: world.place_stove(cell.x, cell.y)
 
 
 # --- HUD ---------------------------------------------------------------------
@@ -152,19 +167,21 @@ func _update_ui() -> void:
 	var tools := PackedStringArray()
 	for k in TOOL_NAMES.size():
 		var name_text: String = TOOL_NAMES[k]
+		if (k == Tool.LICHEN and not world.lichen_unlocked) or (k == Tool.STOVE and not world.stove_unlocked):
+			name_text = "???" # blueprints are found in the frozen camps
 		tools.append(("[%d %s]" if k == tool else "%d %s") % [k + 1, name_text])
 	var hover := world.describe(_hover.x, _hover.y)
-	_hud.text = "Day %d of %d   %s   Fuel %d   Felt %d   Snow %d   Warmth: %s\n%s   %s" % [
-		mini(world.day() + 1, WorldSim.TARGET_DAYS), WorldSim.TARGET_DAYS,
-		"PAUSED" if _paused else "Speed %dx" % speed,
-		ceili(world.fuel), world.felt, world.snow, ", ".join(people),
-		"  ".join(tools), hover,
+	_hud.text = "Day %d   %s   Fuel %d   Food %d   Felt %d   Snow %d   Warmth: %s\n%s\n\n%s" % [
+		world.day() + 1, "PAUSED" if _paused else "Speed %dx" % speed,
+		ceili(world.fuel), ceili(world.food), world.felt, world.snow, ", ".join(people),
+		hover, "  ".join(tools),
 	]
-	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-6: tools   Space: pause   +/-: speed   H: heat view   R: restart"
+	_journal.text = "Journal %d/%d: %s" % [mini(world.journal_step + 1, world.journal.size()), world.journal.size(), world.journal_text()]
+	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-8: tools   Space: pause   +/-: speed   H: heat view   R: restart"
 	if world.is_won():
-		_banner.text = "The colony holds. %d of 3 survived ten days." % world.alive_count()
+		_banner.text = "The journal is complete. %d of 3 made it, on day %d." % [world.alive_count(), world.day() + 1]
 	elif world.is_lost():
-		_banner.text = "Everyone froze. Press R to try again."
+		_banner.text = "Everyone is gone. Press R to try again."
 	else:
 		_banner.text = ""
 
@@ -188,8 +205,12 @@ func _draw() -> void:
 			match world.build[i]:
 				WorldSim.Build.FIRE: _draw_fire(r, world.fire_is_burning(i), now + x)
 				WorldSim.Build.LADDER: _draw_ladder(r)
+				WorldSim.Build.LICHEN: _draw_lichen(r)
+				WorldSim.Build.STOVE: _draw_stove(r, world.fire_is_burning(i), now + x)
 			if world.dig_mark[i] == 1:
 				draw_rect(r.grow(-1.5), COLOR_DIG_MARK, false, 1.5)
+	for camp in world.camps:
+		_draw_camp(camp)
 	for k in world.colonists.size():
 		_draw_colonist(world.colonists[k], k)
 	if world.in_bounds(_hover.x, _hover.y):
@@ -201,8 +222,12 @@ func _draw_tile(i: int, x: int, y: int, r: Rect2) -> void:
 	var temp := world.temp[i]
 	match t:
 		WorldSim.Tile.AIR:
+			var camp := world.camp_at(x, y)
 			if y < WorldSim.SURFACE_ROWS:
 				draw_rect(r, COLOR_STORM)
+			elif camp != -1 and not world.camps[camp].found:
+				# An unopened camp is still sealed in ice; you only see it through the walls.
+				draw_rect(r, COLOR_YOUNG_ICE.lerp(COLOR_OLD_ICE, world.ice_age(y)).darkened(0.25))
 			else:
 				draw_rect(r, COLOR_CAVE.lerp(COLOR_CAVE_WARM, clampf(temp / 25.0, 0.0, 1.0)))
 		WorldSim.Tile.ICE:
@@ -274,3 +299,47 @@ func _heat_color(t: float) -> Color:
 	if t < 0.0:
 		return Color(0.95, 0.97, 1.0).lerp(Color(0.10, 0.20, 0.70), clampf(-t / 40.0, 0.0, 1.0))
 	return Color(0.95, 0.97, 1.0).lerp(Color(0.85, 0.20, 0.10), clampf(t / 30.0, 0.0, 1.0))
+
+
+func _draw_lichen(r: Rect2) -> void:
+	var base := r.end.y
+	for k in 3:
+		var cx := r.position.x + 3 + k * 5
+		draw_circle(Vector2(cx, base - 3), 2.5 + (k % 2), COLOR_LICHEN)
+	draw_line(Vector2(r.position.x + 1, base - 1), Vector2(r.end.x - 1, base - 1), COLOR_LICHEN.darkened(0.4), 2.0)
+
+
+func _draw_stove(r: Rect2, burning: bool, t: float) -> void:
+	var body := Rect2(r.position.x + 2, r.position.y + 4, CELL - 4, CELL - 4)
+	draw_rect(body, COLOR_STOVE)
+	draw_rect(Rect2(r.position.x + 6, r.position.y, 4, 4), COLOR_STOVE) # chimney stub
+	var glow := COLOR_FIRE.lerp(COLOR_FIRE_CORE, 0.5 + 0.5 * sin(t * 7.0)) if burning else Color(0.3, 0.3, 0.3)
+	draw_rect(Rect2(body.position.x + 2, body.position.y + 5, body.size.x - 4, 3), glow)
+
+
+## Camps sealed in the ice are drawn faintly, as if seen through it, so the player always has somewhere to dig toward.
+func _draw_camp(camp: Dictionary) -> void:
+	var rect: Rect2i = camp.rect
+	var found: bool = camp.found
+	var alpha := 1.0 if found else 0.45
+	var origin := Vector2(rect.position.x * CELL, TOP + rect.position.y * CELL)
+	var size := Vector2(rect.size.x * CELL, rect.size.y * CELL)
+	var floor_y := origin.y + size.y
+	var prop := Color(COLOR_CAMP_PROP, alpha)
+	# A collapsed tent at one end.
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(origin.x + 4, floor_y), Vector2(origin.x + 2.6 * CELL, floor_y),
+		Vector2(origin.x + 1.2 * CELL, floor_y - 1.6 * CELL)]), prop)
+	# A supply box and a figure lying where the cold found them.
+	draw_rect(Rect2(origin.x + 3.4 * CELL, floor_y - 10, 12, 10), Color(COLOR_CRATE, alpha))
+	draw_rect(Rect2(origin.x + 5 * CELL, floor_y - 6, 22, 6), Color(COLOR_BODY, alpha))
+	draw_circle(Vector2(origin.x + 5 * CELL + 25, floor_y - 4), 3.5, Color(COLOR_BODY, alpha))
+	if camp.name == "the last shelter":
+		for k in 9:
+			var tx := origin.x + size.x - 34 + k * 3.5
+			draw_line(Vector2(tx, origin.y + 6), Vector2(tx, origin.y + 16), prop, 1.0)
+	var font := ThemeDB.fallback_font
+	var label: String = camp.name.capitalize() if found else "?"
+	draw_string(font, Vector2(origin.x + 2, origin.y - 3), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(COLOR_JOURNAL, alpha))
+	if not found:
+		draw_rect(Rect2(origin, size), Color(COLOR_JOURNAL, 0.35), false, 1.0)

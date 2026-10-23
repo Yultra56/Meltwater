@@ -11,7 +11,7 @@ config/features=PackedStringArray("4.3")
 [display]
 
 window/size/viewport_width=1024
-window/size/viewport_height=860
+window/size/viewport_height=888
 window/stretch/mode="canvas_items"
 
 [rendering]

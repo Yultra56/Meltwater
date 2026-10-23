@@ -18,6 +18,11 @@ func _init() -> void:
 	_test_digging()
 	_test_meltwater_refreezes()
 	_test_felt_insulates()
+	_test_food()
+	_test_journal()
+	_test_camp_discovery()
+	_test_lichen_grows_food()
+	_test_stove_saves_fuel()
 	_test_full_run()
 	if _failures == 0:
 		print("All simulation checks passed.")
@@ -142,14 +147,94 @@ func _total_strength(world: WorldSim) -> Vector2:
 	return Vector2(a, b)
 
 
+func _test_food() -> void:
+	print("food")
+	var world := WorldSim.new(3)
+	world.place_fire(32, 17)
+	_run(world, WorldSim.TICKS_PER_DAY)
+	print("    rations after one day: %.2f" % world.food)
+	_check(absf(world.food - (WorldSim.START_FOOD - 3.0)) < 0.05, "three colonists eat three rations a day")
+	_run(world, WorldSim.TICKS_PER_DAY * 2)
+	_check(world.food == 0.0, "rations run out after three days")
+
+
+func _test_journal() -> void:
+	print("journal")
+	var world := WorldSim.new(3)
+	_check(world.journal_step == 0, "the journal starts at its first entry")
+	world.place_fire(32, 17)
+	world.tick()
+	_check(world.journal_step == 1, "lighting a fire completes the first entry")
+	world.crates_opened = 1
+	world.tick()
+	_check(world.journal_step == 2, "opening a crate completes the second entry")
+	_check(not world.is_won(), "the run is not won early")
+
+
+func _test_camp_discovery() -> void:
+	print("frozen camps")
+	var world := WorldSim.new(3)
+	_check(world.camps.size() == 3, "three frozen camps")
+	var hut: Rect2i = world.camps[0].rect
+	# Put Ada in a pocket just east of the survey hut and have her dig through its wall.
+	var stand := Vector2i(hut.end.x + 1, hut.end.y - 1)
+	var wall := Vector2i(hut.end.x, hut.end.y - 1)
+	world.tiles[world.idx(stand.x, stand.y)] = WorldSim.Tile.AIR
+	world.colonists[0].pos = stand
+	world.set_dig_mark(wall.x, wall.y, true)
+	var food_before := world.food
+	_run(world, 80)
+	_check(world.camps[0].found, "digging into the survey hut discovers it")
+	_check(world.lichen_unlocked, "the survey hut unlocks the lichen bed")
+	_check(world.food > food_before, "the survey hut holds food")
+	_check(not world.camps[1].found, "other camps stay sealed")
+
+
+func _test_lichen_grows_food() -> void:
+	print("lichen")
+	var plain := WorldSim.new(3)
+	var farm := WorldSim.new(3)
+	for w: WorldSim in [plain, farm]:
+		w.place_fire(32, 17)
+	_check(not farm.place_lichen(30, 17), "lichen needs its blueprint")
+	farm.lichen_unlocked = true
+	farm.snow = 4
+	_check(farm.place_lichen(31, 17) and farm.place_lichen(33, 17), "two lichen beds placed beside the fire")
+	_run(plain, WorldSim.TICKS_PER_DAY)
+	_run(farm, WorldSim.TICKS_PER_DAY)
+	print("    rations after a day: bare %.2f, with lichen %.2f" % [plain.food, farm.food])
+	_check(farm.food >= plain.food + 1.5, "warm lichen beds grow food")
+
+
+func _test_stove_saves_fuel() -> void:
+	print("peat stove")
+	var fire := WorldSim.new(3)
+	var stove := WorldSim.new(3)
+	fire.place_fire(32, 17)
+	_check(not stove.place_stove(32, 17), "the stove needs its blueprint")
+	stove.stove_unlocked = true
+	_check(stove.place_stove(32, 17), "stove placed")
+	_run(fire, WorldSim.TICKS_PER_DAY)
+	_run(stove, WorldSim.TICKS_PER_DAY)
+	print("    fuel used in a day: fire %.1f, stove %.1f; cave air fire %.1f°C, stove %.1f°C" % [
+		WorldSim.START_FUEL - fire.fuel, WorldSim.START_FUEL - stove.fuel, fire.temp[fire.idx(30, 16)], stove.temp[stove.idx(30, 16)]])
+	_check(WorldSim.START_FUEL - stove.fuel < 0.5 * (WorldSim.START_FUEL - fire.fuel), "the stove burns under half the fuel")
+	var warm := 0
+	for c in stove.colonists:
+		if c.warmth > 80.0:
+			warm += 1
+	_check(warm == 3, "a stove keeps everyone warm")
+
+
 func _test_full_run() -> void:
-	print("ten days with one fire")
+	print("ten days with one fire and no other help")
 	var world := WorldSim.new(3)
 	world.place_fire(32, 17)
 	var start := Time.get_ticks_msec()
-	_run(world, WorldSim.TICKS_PER_DAY * WorldSim.TARGET_DAYS)
+	var n := WorldSim.TICKS_PER_DAY * 10
+	_run(world, n)
 	var ms := Time.get_ticks_msec() - start
-	print("    alive %d, fuel %.1f, ice %d, %.2f ms per tick" % [world.alive_count(), world.fuel, _count(world, WorldSim.Tile.ICE), float(ms) / (WorldSim.TICKS_PER_DAY * WorldSim.TARGET_DAYS)])
+	print("    alive %d, fuel %.1f, food %.1f, ice %d, %.2f ms per tick" % [world.alive_count(), world.fuel, world.food, _count(world, WorldSim.Tile.ICE), float(ms) / n])
 	for m in world.messages:
 		print("    log: ", m)
-	_check(world.is_over(), "the run ends by day ten")
+	_check(world.is_lost(), "sitting still is not enough to survive")
