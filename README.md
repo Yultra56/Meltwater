@@ -2,7 +2,7 @@
 
 A survival colony sim set inside a glacier after a new Ice Age. The ice is the warmest shelter left, and every bit of warmth you make melts it.
 
-This is an early prototype. It uses plain shapes instead of art and tests whether managing heat against melting ice is fun, with an expedition journal that leads you down through the camps of earlier expeditions.
+This is an early prototype. The ice, firelight and survivors are drawn in code (a shader and simple animation) as a stand-in for hand-painted art. It tests whether managing heat against melting ice is fun, with an expedition journal that leads you down through the camps of earlier expeditions.
 
 ## How to run it
 
@@ -57,7 +57,9 @@ The journal leads you through three camps frozen in the ice, each deeper than th
 ## Project layout
 
 - `scripts/world.gd`: the simulation (heat, melting, water, collapse, colonists, food, camps and the journal). No drawing.
-- `scripts/main.gd`: drawing, mouse and keyboard tools, and the on-screen text.
+- `scripts/main.gd`: mouse and keyboard tools, the camera and the on-screen text.
+- `scripts/world_view.gd`: draws the world: firelight, particles (drips, steam, sparks, breath), animated survivors, fires, stoves and camps.
+- `shaders/terrain.gdshader`: paints the ice, snow, rock and water, including cracks, layers, bubbles and the heat view.
 - `tests/sim_test.gd`: automated checks for the simulation rules.
 
 To run the checks from a terminal:
