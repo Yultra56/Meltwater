@@ -36,6 +36,8 @@ The journal leads you through three camps frozen in the ice, each deeper than th
 | 6 | Clear |
 | 7 | Lichen bed: grows food when kept above 4°C and dry (costs 2 snow, needs its blueprint) |
 | 8 | Peat stove: heats like a fire on under half the fuel (needs its blueprint) |
+| Scroll wheel | Zoom in and out, toward the mouse pointer |
+| W A S D or arrow keys | Move the view when zoomed in |
 | Space | Pause |
 | + / - | Change speed (1x to 3x) |
 | H | Heat view |

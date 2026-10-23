@@ -23,8 +23,8 @@ const FREEZE_POINT := -2.0
 const CONDUCT := [0.12, 0.06, 0.04, 0.004, 0.012, 0.05]
 const WATER_CONDUCT := 0.09
 const CONVECTION := 0.08
-const ICE_RELAX := 0.002 # how strongly ice drifts back to the glacier's own temperature
-const MELT_RATE := 0.015
+const ICE_RELAX := 0.003 # how strongly ice drifts back to the glacier's own temperature
+const MELT_RATE := 0.006
 const COLLAPSE_INTEGRITY := 0.45
 const REFROZEN_INTEGRITY := 0.55
 const FIRE_HEAT := 3.0
@@ -454,7 +454,7 @@ func _tick_phase_changes() -> void:
 			if temp[i] > MELT_POINT:
 				var excess := temp[i] - MELT_POINT
 				integrity[i] -= excess * MELT_RATE * (2.0 if t == Tile.SNOW else 1.0)
-				temp[i] = MELT_POINT + excess * 0.5 # melting soaks up heat
+				temp[i] = MELT_POINT + excess * 0.3 # melting soaks up most of the heat
 				if integrity[i] <= 0.0:
 					_melt(i, 0.3 if t == Tile.SNOW else 0.6)
 		elif t == Tile.AIR and water[i] > 0.0 and temp[i] < FREEZE_POINT:

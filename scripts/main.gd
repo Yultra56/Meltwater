@@ -7,6 +7,11 @@ const WorldSim := preload("res://scripts/world.gd")
 const CELL := 16
 const TOP := 92 # HUD band above the world, in pixels
 const MAX_SPEED := 3
+const BOTTOM := 156 # message band below the world, in pixels
+const MIN_ZOOM := 1.0
+const MAX_ZOOM := 4.0
+const ZOOM_STEP := 1.15
+const PAN_SPEED := 700.0 # screen pixels per second
 
 enum Tool { DIG, FIRE, FELT, SNOW, LADDER, CLEAR, LICHEN, STOVE }
 const TOOL_NAMES := ["Dig", "Fire", "Felt wall", "Snow block", "Ladder", "Clear", "Lichen bed", "Peat stove"]
@@ -48,11 +53,16 @@ var _hud: Label
 var _journal: Label
 var _log: Label
 var _banner: Label
+var _camera: Camera2D
 
 
 func _ready() -> void:
+	_camera = Camera2D.new()
+	add_child(_camera)
+	_camera.make_current()
 	_build_ui()
 	_new_world()
+	_reset_camera()
 
 
 func _new_world() -> void:
@@ -64,6 +74,15 @@ func _new_world() -> void:
 func _build_ui() -> void:
 	var layer := CanvasLayer.new()
 	add_child(layer)
+	# Solid bands above and below the world so a zoomed-in view never shows through the text.
+	var view := Vector2(WorldSim.W * CELL, TOP + WorldSim.H * CELL + BOTTOM)
+	for band in [Rect2(0, 0, view.x, TOP), Rect2(0, TOP + WorldSim.H * CELL, view.x, BOTTOM)]:
+		var panel := ColorRect.new()
+		panel.color = COLOR_BACKGROUND
+		panel.position = band.position
+		panel.size = band.size
+		panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		layer.add_child(panel)
 	_hud = Label.new()
 	_hud.position = Vector2(12, 6)
 	_hud.add_theme_font_size_override("font_size", 14)
@@ -99,6 +118,7 @@ func _process(delta: float) -> void:
 			steps += 1
 		if steps == 10:
 			_accumulator = 0.0 # the machine can't keep up; drop the backlog rather than spiral
+	_pan_camera(delta)
 	_update_ui()
 	queue_redraw()
 
@@ -120,8 +140,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_EQUAL, KEY_KP_ADD: speed = mini(speed + 1, MAX_SPEED)
 			KEY_MINUS, KEY_KP_SUBTRACT: speed = maxi(speed - 1, 1)
 			KEY_H: _heat_view = not _heat_view
-			KEY_R: _new_world()
+			KEY_R:
+				_new_world()
+				_reset_camera()
 	elif event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP or event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			if event.pressed:
+				_zoom_at(event.position, ZOOM_STEP if event.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / ZOOM_STEP)
+			return
 		if event.pressed:
 			_painting = 1 if event.button_index == MOUSE_BUTTON_LEFT else 2 if event.button_index == MOUSE_BUTTON_RIGHT else 0
 			_apply_at(_cell_at(event.position))
@@ -134,8 +160,62 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _cell_at(screen: Vector2) -> Vector2i:
-	var local := get_global_transform_with_canvas().affine_inverse() * screen
+	if screen.y < TOP or screen.y >= TOP + WorldSim.H * CELL:
+		return Vector2i(-1, -1) # over the text bands, not the world
+	var local := _screen_to_world(screen)
 	return Vector2i(floori(local.x / CELL), floori((local.y - TOP) / CELL))
+
+
+# --- Camera ------------------------------------------------------------------
+# The world is drawn at its natural size between the two text bands; at zoom 1 it fills that gap exactly.
+
+func _screen_to_world(screen: Vector2) -> Vector2:
+	return _camera.position + (screen - get_viewport_rect().size / 2.0) / _camera.zoom.x
+
+
+func _reset_camera() -> void:
+	_camera.zoom = Vector2.ONE
+	_camera.position = get_viewport_rect().size / 2.0
+	_clamp_camera()
+
+
+func _zoom_at(screen: Vector2, factor: float) -> void:
+	var before := _screen_to_world(screen)
+	var zoom := clampf(_camera.zoom.x * factor, MIN_ZOOM, MAX_ZOOM)
+	_camera.zoom = Vector2(zoom, zoom)
+	# Keep the point under the cursor in place while zooming.
+	_camera.position = before - (screen - get_viewport_rect().size / 2.0) / zoom
+	_clamp_camera()
+
+
+func _pan_camera(delta: float) -> void:
+	var dir := Vector2.ZERO
+	if Input.is_physical_key_pressed(KEY_A) or Input.is_physical_key_pressed(KEY_LEFT):
+		dir.x -= 1.0
+	if Input.is_physical_key_pressed(KEY_D) or Input.is_physical_key_pressed(KEY_RIGHT):
+		dir.x += 1.0
+	if Input.is_physical_key_pressed(KEY_W) or Input.is_physical_key_pressed(KEY_UP):
+		dir.y -= 1.0
+	if Input.is_physical_key_pressed(KEY_S) or Input.is_physical_key_pressed(KEY_DOWN):
+		dir.y += 1.0
+	if dir != Vector2.ZERO:
+		_camera.position += dir.normalized() * PAN_SPEED * delta / _camera.zoom.x
+		_clamp_camera()
+
+
+## Keeps the visible part of the world inside its edges, measured in the gap between the text bands.
+func _clamp_camera() -> void:
+	var zoom := _camera.zoom.x
+	var screen := get_viewport_rect().size
+	var gap_center := Vector2(screen.x / 2.0, TOP + WorldSim.H * CELL / 2.0)
+	var offset := (gap_center - screen / 2.0) / zoom # from camera centre to the gap's centre, in world units
+	var half := Vector2(WorldSim.W * CELL, WorldSim.H * CELL) / zoom / 2.0
+	var world_min := Vector2(0, TOP)
+	var world_max := Vector2(WorldSim.W * CELL, TOP + WorldSim.H * CELL)
+	var focus := _camera.position + offset
+	focus.x = clampf(focus.x, world_min.x + half.x, world_max.x - half.x)
+	focus.y = clampf(focus.y, world_min.y + half.y, world_max.y - half.y)
+	_camera.position = focus - offset
 
 
 func _apply_at(cell: Vector2i) -> void:
@@ -177,7 +257,7 @@ func _update_ui() -> void:
 		hover, "  ".join(tools),
 	]
 	_journal.text = "Journal %d/%d: %s" % [mini(world.journal_step + 1, world.journal.size()), world.journal.size(), world.journal_text()]
-	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-8: tools   Space: pause   +/-: speed   H: heat view   R: restart"
+	_log.text = "\n".join(world.messages) + "\nLeft drag: use tool   Right drag: clear   1-8: tools   Scroll: zoom   WASD: move view   Space: pause   +/-: speed   H: heat   R: restart"
 	if world.is_won():
 		_banner.text = "The journal is complete. %d of 3 made it, on day %d." % [world.alive_count(), world.day() + 1]
 	elif world.is_lost():
