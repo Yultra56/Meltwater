@@ -1,0 +1,98 @@
+{
+ "crate": {
+  "frames": 1,
+  "fps": 0
+ },
+ "fire_burning": {
+  "frames": 4,
+  "fps": 8
+ },
+ "fire_out": {
+  "frames": 1,
+  "fps": 0
+ },
+ "ladder": {
+  "frames": 1,
+  "fps": 0
+ },
+ "lichen_dormant": {
+  "frames": 1,
+  "fps": 0
+ },
+ "lichen_growing": {
+  "frames": 1,
+  "fps": 0
+ },
+ "stove_burning": {
+  "frames": 1,
+  "fps": 0
+ },
+ "stove_cold": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_mustard_climb": {
+  "frames": 4,
+  "fps": 6
+ },
+ "survivor_mustard_dig": {
+  "frames": 4,
+  "fps": 8
+ },
+ "survivor_mustard_frozen": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_mustard_idle": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_mustard_walk": {
+  "frames": 4,
+  "fps": 8
+ },
+ "survivor_red_climb": {
+  "frames": 4,
+  "fps": 6
+ },
+ "survivor_red_dig": {
+  "frames": 4,
+  "fps": 8
+ },
+ "survivor_red_frozen": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_red_idle": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_red_walk": {
+  "frames": 4,
+  "fps": 8
+ },
+ "survivor_teal_climb": {
+  "frames": 4,
+  "fps": 6
+ },
+ "survivor_teal_dig": {
+  "frames": 4,
+  "fps": 8
+ },
+ "survivor_teal_frozen": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_teal_idle": {
+  "frames": 1,
+  "fps": 0
+ },
+ "survivor_teal_walk": {
+  "frames": 4,
+  "fps": 8
+ },
+ "tent": {
+  "frames": 1,
+  "fps": 0
+ }
+}
