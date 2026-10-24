@@ -4,6 +4,7 @@ extends Node2D
 
 const WorldSim := preload("res://scripts/world.gd")
 const TerrainShader := preload("res://shaders/terrain.gdshader")
+const SpriteArt := preload("res://scripts/sprite_art.gd")
 
 const CELL := 16
 const LIGHT_RADIUS := 8 # tiles
@@ -33,6 +34,8 @@ const COLOR_BOOTS := Color(0.10, 0.08, 0.07)
 const COLOR_FACE := Color(0.42, 0.29, 0.22)
 const COLOR_DRIP := Color(0.70, 0.86, 1.0, 0.9)
 const PARKAS := [Color(0.70, 0.20, 0.16), Color(0.82, 0.60, 0.18), Color(0.16, 0.50, 0.54)]
+const PARKA_SPRITES := ["survivor_red", "survivor_mustard", "survivor_teal"] # same order as PARKAS
+const SURVIVOR_HEIGHT := 18.0 # pixels from boots to hood when standing
 
 var world: WorldSim
 var heat_view := false
@@ -52,6 +55,7 @@ var _shown: Array[Vector2] = [] # where each survivor is drawn, easing toward th
 var _facing: Array[float] = []
 var _stride: Array[float] = []
 var _time := 0.0
+var _art := SpriteArt.new()
 
 
 func _ready() -> void:
@@ -293,6 +297,10 @@ func _draw_dig_mark(r: Rect2) -> void:
 
 
 func _draw_fire(r: Rect2, burning: bool, t: float) -> void:
+	var sprite := "fire_burning" if burning else "fire_out"
+	if _art.has(sprite):
+		_art.draw_fit(self, sprite, r, t)
+		return
 	var base := Vector2(r.position.x + CELL / 2.0, r.end.y)
 	draw_line(base + Vector2(-6, -1), base + Vector2(5, -3), COLOR_LOG, 2.5)
 	draw_line(base + Vector2(-5, -3), base + Vector2(6, -1), COLOR_LOG.darkened(0.2), 2.5)
@@ -312,6 +320,10 @@ func _draw_fire(r: Rect2, burning: bool, t: float) -> void:
 
 
 func _draw_stove(r: Rect2, burning: bool, t: float) -> void:
+	var sprite := "stove_burning" if burning else "stove_cold"
+	if _art.has(sprite):
+		_art.draw_fit(self, sprite, r.grow_side(SIDE_TOP, 4), t)
+		return
 	var body := Rect2(r.position.x + 2, r.position.y + 5, CELL - 4, CELL - 7)
 	draw_rect(Rect2(body.position.x + 1, r.end.y - 2, 2, 2), COLOR_IRON) # legs
 	draw_rect(Rect2(body.end.x - 3, r.end.y - 2, 2, 2), COLOR_IRON)
@@ -327,6 +339,9 @@ func _draw_stove(r: Rect2, burning: bool, t: float) -> void:
 
 
 func _draw_ladder(r: Rect2) -> void:
+	if _art.has("ladder"):
+		_art.draw_fit(self, "ladder", r, 0.0, Color.WHITE, true)
+		return
 	draw_line(r.position + Vector2(4, 0), r.position + Vector2(4, CELL), COLOR_LADDER, 1.8)
 	draw_line(r.position + Vector2(12, 0), r.position + Vector2(12, CELL), COLOR_LADDER, 1.8)
 	for k in 3:
@@ -336,6 +351,10 @@ func _draw_ladder(r: Rect2) -> void:
 
 
 func _draw_lichen(r: Rect2, growing: bool, t: float) -> void:
+	var sprite := "lichen_growing" if growing else "lichen_dormant"
+	if _art.has(sprite):
+		_art.draw_fit(self, sprite, r, t)
+		return
 	var base := r.end.y
 	draw_line(Vector2(r.position.x + 1, base - 1), Vector2(r.end.x - 1, base - 1), Color(0.30, 0.24, 0.18), 2.0) # peat tray
 	var colour := COLOR_LICHEN if growing else COLOR_LICHEN.darkened(0.45)
@@ -358,6 +377,26 @@ func _draw_camp(camp: Dictionary) -> void:
 	var size := Vector2(rect.size.x * CELL, rect.size.y * CELL)
 	var floor_y := origin.y + size.y
 	var canvas := Color(COLOR_CAMP_PROP, alpha)
+	if _art.has("tent") and _art.has("crate") and _art.has("survivor_red_frozen"):
+		var seen := Color(1, 1, 1, alpha)
+		_art.draw_fit(self, "tent", Rect2(origin.x, floor_y - 1.6 * CELL, 2.8 * CELL, 1.6 * CELL), 0.0, seen)
+		_art.draw_fit(self, "crate", Rect2(origin.x + 3.2 * CELL, floor_y - 12, 15, 12), 0.0, seen)
+		_art.draw_fit(self, "survivor_red_frozen", Rect2(origin.x + 5.1 * CELL, floor_y - 9, 26, 9), 0.0, seen)
+	else:
+		_draw_camp_shapes(origin, floor_y, canvas, alpha)
+	if camp.name == "the last shelter":
+		for k in 9:
+			var tx := origin.x + size.x - 34 + k * 3.5
+			draw_line(Vector2(tx, origin.y + 6), Vector2(tx + (2.0 if k % 5 == 4 else 0.0), origin.y + 16), canvas, 1.0)
+	var font := ThemeDB.fallback_font
+	var label: String = String(camp.name).capitalize() if found else "?"
+	draw_string(font, Vector2(origin.x + 2, origin.y - 3), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(COLOR_JOURNAL, alpha))
+	if not found:
+		draw_rect(Rect2(origin, size), Color(COLOR_JOURNAL, 0.30), false, 1.0)
+
+
+## The camp drawn in code, when there are no sprites for it.
+func _draw_camp_shapes(origin: Vector2, floor_y: float, canvas: Color, alpha: float) -> void:
 	# A collapsed tent, its ridge pole snapped.
 	var peak := Vector2(origin.x + 1.2 * CELL, floor_y - 1.5 * CELL)
 	draw_colored_polygon(PackedVector2Array([Vector2(origin.x + 3, floor_y), Vector2(origin.x + 2.7 * CELL, floor_y), peak]), canvas)
@@ -371,23 +410,18 @@ func _draw_camp(camp: Dictionary) -> void:
 	draw_line(body, body + Vector2(18, 0), Color(COLOR_FROZEN, alpha), 5.0)
 	draw_circle(body + Vector2(21, -0.5), 3.4, Color(COLOR_FROZEN, alpha))
 	draw_line(body + Vector2(2, -3), body + Vector2(12, -3.5), Color(1, 1, 1, 0.35 * alpha), 1.0) # rime
-	if camp.name == "the last shelter":
-		for k in 9:
-			var tx := origin.x + size.x - 34 + k * 3.5
-			draw_line(Vector2(tx, origin.y + 6), Vector2(tx + (2.0 if k % 5 == 4 else 0.0), origin.y + 16), canvas, 1.0)
-	var font := ThemeDB.fallback_font
-	var label: String = String(camp.name).capitalize() if found else "?"
-	draw_string(font, Vector2(origin.x + 2, origin.y - 3), label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(COLOR_JOURNAL, alpha))
-	if not found:
-		draw_rect(Rect2(origin, size), Color(COLOR_JOURNAL, 0.30), false, 1.0)
 
 
 func _draw_survivor(k: int) -> void:
 	var c: WorldSim.Colonist = world.colonists[k]
 	var feet := _shown[k]
 	var parka: Color = PARKAS[k % PARKAS.size()]
+	var sprite: String = PARKA_SPRITES[k % PARKA_SPRITES.size()]
 	if not c.alive:
 		# Frozen where they fell.
+		if _art.has(sprite + "_frozen"):
+			_art.draw_fit(self, sprite + "_frozen", Rect2(feet.x - 10, feet.y - 9, 20, 9))
+			return
 		draw_line(feet + Vector2(-6, -2.5), feet + Vector2(5, -2.5), parka.lerp(COLOR_FROZEN, 0.6), 5.0)
 		draw_circle(feet + Vector2(7.5, -3), 3.2, COLOR_FUR.lerp(COLOR_FROZEN, 0.5))
 		draw_line(feet + Vector2(-5, -4.5), feet + Vector2(4, -4.5), Color(1, 1, 1, 0.5), 1.0)
@@ -400,6 +434,25 @@ func _draw_survivor(k: int) -> void:
 	var digging := c.job != -1 and c.path.is_empty() and not walking
 	var bob := absf(sin(_stride[k])) * -0.8 if walking else 0.0
 	parka = parka.lerp(COLOR_FROZEN, cold * 0.35)
+
+	if _art.has(sprite + "_idle"):
+		var gap := _colonist_target(k) - feet
+		var climbing := walking and absf(gap.y) > absf(gap.x) \
+				and world.build[world.idx(c.pos.x, c.pos.y)] == WorldSim.Build.LADDER
+		var pose := "_idle"
+		if digging:
+			pose = "_dig"
+		elif climbing:
+			pose = "_climb"
+		elif walking:
+			pose = "_walk"
+		if not _art.has(sprite + pose):
+			pose = "_idle"
+		var tint := Color.WHITE.lerp(COLOR_FROZEN.lightened(0.3), cold * 0.35)
+		var scale := SURVIVOR_HEIGHT / _art.height_of(sprite + "_idle")
+		_art.draw(self, sprite + pose, p, scale, _time + k * 0.37, f, tint)
+		_draw_warmth_bar(c, feet)
+		return
 
 	# Legs and boots.
 	for side: float in [-1.0, 1.0]:
@@ -443,7 +496,11 @@ func _draw_survivor(k: int) -> void:
 	if cold > 0.5:
 		draw_circle(head_center + Vector2(f * 0.9, 0.2), 2.8, Color(1, 1, 1, (cold - 0.5) * 0.6)) # frost in the fur
 
-	# A thin warmth bar, only when it matters.
+	_draw_warmth_bar(c, feet)
+
+
+## A thin warmth bar over a survivor, only when it matters.
+func _draw_warmth_bar(c: WorldSim.Colonist, feet: Vector2) -> void:
 	if c.warmth < 70.0:
 		var bar := Rect2(feet.x - 5, feet.y - 20, 10, 1.6)
 		draw_rect(bar, Color(0.05, 0.05, 0.08, 0.8))

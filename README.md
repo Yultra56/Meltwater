@@ -67,11 +67,18 @@ Every sound is made in code by `tools/make_sounds.py` from noise and sine waves,
 
 To swap in a real recording, save it as an `.ogg` with the same name in `sounds/` and Godot will use it. To rebuild the made-up sounds after editing the recipes, run `python3 tools/make_sounds.py` (it needs Python with numpy, and ffmpeg).
 
+## Sprites
+
+The survivors, fires, stoves, ladders, lichen beds and frozen camps can be drawn with pixel-art sprites made by [PixelLab](https://pixellab.ai). Each one is a short description in `tools/make_sprites.py`. To make them, put your PixelLab API key in the `PIXELLAB_API_KEY` environment variable and run `python3 tools/make_sprites.py` (it needs Python with Pillow). It only makes the ones that are missing; name some to remake just those, for example `python3 tools/make_sprites.py fire_burning tent`. The key is never saved to the project.
+
+The sprites land in `sprites/`, one row of frames per picture. You can paint over any of them in Krita and keep the same size. Anything without a sprite is drawn in code as before, so the game always runs.
+
 ## Project layout
 
 - `scripts/world.gd`: the simulation (heat, melting, water, collapse, colonists, food, camps and the journal). No drawing.
 - `scripts/main.gd`: mouse and keyboard tools, the camera and the on-screen text.
 - `scripts/world_view.gd`: draws the world: firelight, particles (drips, steam, sparks, breath), animated survivors, fires, stoves and camps.
+- `scripts/sprite_art.gd`: loads the sprites in `sprites/` and draws them; `tools/make_sprites.py` makes them with PixelLab.
 - `scripts/sound_board.gd`: plays the ambience, fire loops, heartbeat and one-off sounds for what the simulation reports.
 - `sounds/`: the sound files, and `tools/make_sounds.py`, which makes them.
 - `shaders/terrain.gdshader`: paints the ice, snow, rock and water, including cracks, layers, bubbles and the heat view.
